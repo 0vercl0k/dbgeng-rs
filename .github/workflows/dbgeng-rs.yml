@@ -13,6 +13,9 @@ jobs:
       - name: Set up rust
         run: rustup default nightly
 
+      - name: Install rustfmt
+        run: rustup component add rustfmt
+
       - name: cargo fmt
         run: cargo +nightly fmt --check
 
