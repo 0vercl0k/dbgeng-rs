@@ -2,8 +2,9 @@ use std::ffi::{CStr, CString};
 
 use anyhow::{Context, Result};
 use bitflags::bitflags;
+use windows::core::{IUnknown, Interface, GUID};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    IDebugBreakpoint, DEBUG_BREAKPOINT_ADDER_ONLY, DEBUG_BREAKPOINT_DEFERRED,
+    IDebugBreakpoint3, DEBUG_BREAKPOINT_ADDER_ONLY, DEBUG_BREAKPOINT_DEFERRED,
     DEBUG_BREAKPOINT_ENABLED, DEBUG_BREAKPOINT_GO_ONLY, DEBUG_BREAKPOINT_ONE_SHOT,
     DEBUG_BREAKPOINT_PARAMETERS,
 };
@@ -32,11 +33,12 @@ pub enum BreakpointType {
 ///
 /// Typically to setup a breakpoint, you will want to set the offset
 /// or offset expression and then set the `BreakpointFlags::ENABLED` flag.
-pub struct DebugBreakpoint(IDebugBreakpoint);
+pub struct DebugBreakpoint(IDebugBreakpoint3);
 
 impl DebugBreakpoint {
-    pub fn new(bp: IDebugBreakpoint) -> Self {
-        Self(bp)
+    pub fn new<I: Into<IUnknown>>(bp: I) -> Result<Self> {
+        let bp = bp.into().cast()?;
+        Ok(Self(bp))
     }
 
     /// The unique breakpoint ID. As long as this breakpoint is active, this
@@ -44,6 +46,12 @@ impl DebugBreakpoint {
     pub fn id(&self) -> Result<u32> {
         let id = unsafe { self.0.GetId() }?;
         Ok(id)
+    }
+
+    /// The globally unique ID for this breakpoint. This will uniquely identify
+    /// this breakpoint in any context.
+    pub fn guid(&self) -> Result<GUID> {
+        Ok(unsafe { self.0.GetGuid()? })
     }
 
     pub fn command(&self) -> Result<String> {

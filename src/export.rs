@@ -7,8 +7,6 @@ use windows::Win32::Foundation::{E_ABORT, S_OK};
 use crate::client::DebugClient;
 use crate::dlogln;
 
-pub type RawIUnknown = *mut std::ffi::c_void;
-
 #[macro_export]
 macro_rules! export_cmd {
     ($name:ident) => {

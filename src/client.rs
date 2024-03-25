@@ -5,19 +5,21 @@ use std::ffi::CString;
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use windows::core::{ComInterface, IUnknown};
+use windows::core::{IUnknown, Interface};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    IDebugControl3, IDebugDataSpaces4, IDebugRegisters, IDebugSymbols, DEBUG_ANY_ID,
-    DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA, DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS,
-    DEBUG_OUTPUT_NORMAL, DEBUG_VALUE, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32,
-    DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16, DEBUG_VALUE_INT32,
-    DEBUG_VALUE_INT64, DEBUG_VALUE_INT8, DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64,
+    DebugCreate, IDebugClient8, IDebugControl3, IDebugDataSpaces4, IDebugEventCallbacks,
+    IDebugRegisters, IDebugSymbols, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA,
+    DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_VALUE,
+    DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80,
+    DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8,
+    DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64,
 };
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
 
 use crate::as_pcstr::AsPCSTR;
 use crate::bits::Bits;
 use crate::breakpoint::{BreakpointType, DebugBreakpoint};
+use crate::events::{DbgEventCallbacks, EventCallbacks};
 
 /// Extract `u128` off a `DEBUG_VALUE`.
 pub fn u128_from_debugvalue(v: DEBUG_VALUE) -> Result<u128> {
@@ -111,7 +113,9 @@ macro_rules! dlog {
     }};
 }
 
+#[derive(Clone)]
 pub struct DebugClient {
+    client: IDebugClient8,
     control: IDebugControl3,
     registers: IDebugRegisters,
     dataspaces: IDebugDataSpaces4,
@@ -124,13 +128,24 @@ impl DebugClient {
         let registers = client.cast()?;
         let dataspaces = client.cast()?;
         let symbols = client.cast()?;
+        let client = client.cast()?;
 
         Ok(Self {
+            client,
             control,
             registers,
             dataspaces,
             symbols,
         })
+    }
+
+    /// Create a new instance of the debug client interface.
+    pub fn create() -> Result<Self> {
+        unsafe {
+            DebugCreate::<IUnknown>()
+                .map(|c| Self::new(&c.into()).unwrap())
+                .map_err(|e| e.into())
+        }
     }
 
     /// Output a message `s`.
@@ -156,7 +171,6 @@ impl DebugClient {
     where
         Str: Into<Vec<u8>>,
     {
-        self.output(DEBUG_OUTPUT_NORMAL, "[snapshot] ")?;
         self.output(DEBUG_OUTPUT_NORMAL, args)?;
         self.output(DEBUG_OUTPUT_NORMAL, "\n")
     }
@@ -177,6 +191,18 @@ impl DebugClient {
         .context(format!("Execute({:?}) failed", cstr))
     }
 
+    /// Setup an object to receive debugger event callbacks.
+    pub fn set_event_callbacks<E: EventCallbacks + 'static>(&self, e: E) -> Result<()> {
+        let callbacks = Box::new(e);
+        let callbacks: IUnknown = DbgEventCallbacks::new(self.clone(), callbacks).into();
+
+        unsafe {
+            self.client
+                .SetEventCallbacks(&callbacks.cast::<IDebugEventCallbacks>()?)
+        }
+        .context("SetEventCallbacks failed")
+    }
+
     /// Create a new breakpoint.
     pub fn add_breakpoint(
         &self,
@@ -193,7 +219,7 @@ impl DebugClient {
             )
         }?;
 
-        Ok(DebugBreakpoint::new(bp))
+        Ok(DebugBreakpoint::new(bp)?)
     }
 
     /// Get the register indices from names.

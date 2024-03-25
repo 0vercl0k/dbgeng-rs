@@ -3,6 +3,7 @@ name = "dbgeng"
 version = "0.1.0"
 edition = "2021"
 authors = ["Axel '0vercl0k' Souchet"]
+license = "MIT OR Apache-2.0"
 
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -16,5 +17,16 @@ members = [
 serde = { version = "1", features = ["derive"], optional = true }
 bitflags = "2.4.2"
 anyhow = { version = "1.0.79" }
-windows = { version = "0.52.0", features = ["Win32_Foundation", "Win32_System", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_Debug_Extensions", "Win32_System_SystemInformation" ] }
 paste = "1.0.14"
+
+[dependencies.windows]
+version = "0.54.0"
+features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_System",
+    "Win32_System_Diagnostics",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_Debug_Extensions",
+    "Win32_System_SystemInformation"
+]
