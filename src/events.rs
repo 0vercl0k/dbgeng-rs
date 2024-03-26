@@ -42,7 +42,7 @@ pub enum DebugInstruction {
 }
 
 impl DebugInstruction {
-    fn to_status(&self) -> u32 {
+    fn as_status(&self) -> u32 {
         match self {
             DebugInstruction::Break => DEBUG_STATUS_BREAK,
             DebugInstruction::StepInto => DEBUG_STATUS_STEP_INTO,
@@ -108,7 +108,7 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
         // does not actually return a HRESULT. We'll need to shim our return
         // value into a HRESULT-looking thing. Ok(_) maps to 0, and Err(e) maps
         // to e.code(). So we'll always return an "error".
-        let res = HRESULT(res.to_status() as i32);
+        let res = HRESULT(res.as_status() as i32);
         Err(res.into())
     }
 

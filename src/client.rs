@@ -144,7 +144,7 @@ impl DebugClient {
     pub fn create() -> Result<Self> {
         unsafe {
             DebugCreate::<IUnknown>()
-                .map(|c| Self::new(&c.into()).unwrap())
+                .map(|c| Self::new(&c).unwrap())
                 .map_err(|e| e.into())
         }
     }
@@ -241,7 +241,7 @@ impl DebugClient {
             )
         }?;
 
-        Ok(DebugBreakpoint::new(bp)?)
+        DebugBreakpoint::new(bp)
     }
 
     /// Get the register indices from names.
