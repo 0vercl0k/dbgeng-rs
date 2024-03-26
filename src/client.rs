@@ -8,10 +8,10 @@ use serde::{Deserialize, Serialize};
 use windows::core::{IUnknown, Interface};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
     DebugCreate, IDebugClient8, IDebugControl3, IDebugDataSpaces4, IDebugEventCallbacks,
-    IDebugRegisters, IDebugSymbols, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA,
-    DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_VALUE,
-    DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80,
-    DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8,
+    IDebugRegisters, IDebugSymbols, IDebugSymbols3, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE,
+    DEBUG_BREAKPOINT_DATA, DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL,
+    DEBUG_VALUE, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64,
+    DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8,
     DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64,
 };
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
@@ -20,6 +20,7 @@ use crate::as_pcstr::AsPCSTR;
 use crate::bits::Bits;
 use crate::breakpoint::{BreakpointType, DebugBreakpoint};
 use crate::events::{DbgEventCallbacks, EventCallbacks};
+use crate::symbol::SymbolModule;
 
 /// Extract `u128` off a `DEBUG_VALUE`.
 pub fn u128_from_debugvalue(v: DEBUG_VALUE) -> Result<u128> {
@@ -119,7 +120,7 @@ pub struct DebugClient {
     control: IDebugControl3,
     registers: IDebugRegisters,
     dataspaces: IDebugDataSpaces4,
-    symbols: IDebugSymbols,
+    symbols: IDebugSymbols3,
 }
 
 impl DebugClient {
@@ -389,6 +390,18 @@ impl DebugClient {
         Ok(usize::try_from(amount_read)?)
     }
 
+    /// Look up a module by name.
+    pub fn get_sym_module(&self, name: &str) -> Result<SymbolModule> {
+        let name_cstr = CString::new(name)?;
+        let mut base = 0u64;
+        unsafe {
+            self.symbols
+                .GetModuleByModuleName(name_cstr.as_pcstr(), 0, None, Some(&mut base))
+        }?;
+
+        Ok(SymbolModule::new(self.symbols.clone(), base))
+    }
+
     /// Get the debuggee type.
     pub fn debuggee_type(&self) -> Result<(u32, u32)> {
         let mut class = 0;
@@ -423,7 +436,7 @@ impl DebugClient {
     }
 
     /// Read a NULL terminated string at `addr`.
-    pub fn read_cstring(&self, addr: u64) -> Result<String> {
+    pub fn read_cstring_virtual(&self, addr: u64) -> Result<String> {
         let maxbytes = 100;
         let mut buffer = vec![0; maxbytes];
         let mut length = 0;
@@ -432,6 +445,32 @@ impl DebugClient {
                 addr,
                 maxbytes as u32,
                 Some(buffer.as_mut()),
+                Some(&mut length),
+            )
+        }?;
+
+        if length == 0 {
+            bail!("length is zero")
+        }
+
+        let length = length as usize;
+        buffer.resize(length - 1, 0);
+
+        Ok(String::from_utf8_lossy(&buffer).into_owned())
+    }
+
+    /// Read a UNICODE_STRING at `addr`.
+    /// FIXME: This might not be the right way to do this.
+    pub fn read_ustr_virtual(&self, addr: u64) -> Result<String> {
+        let maxbytes = 100;
+        let mut buffer = vec![0; maxbytes];
+        let mut length = 0;
+        unsafe {
+            self.dataspaces.ReadUnicodeStringVirtual(
+                addr,
+                maxbytes as u32,
+                65001, // CP_UTF8
+                Some(&mut buffer),
                 Some(&mut length),
             )
         }?;

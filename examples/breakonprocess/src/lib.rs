@@ -1,18 +1,63 @@
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use dbgeng::breakpoint::DebugBreakpoint;
 use dbgeng::client::DebugClient;
 use dbgeng::events::{DebugInstruction, EventCallbacks};
-use dbgeng::export_cmd;
+use dbgeng::{dlogln, export_cmd};
 use windows::core::{GUID, HRESULT};
 use windows::Win32::Foundation::S_OK;
 use windows::Win32::System::Diagnostics::Debug::Extensions::DEBUG_NOTIFY_SESSION_ACCESSIBLE;
 
+struct CallbackBreakpointData {
+    bp: DebugBreakpoint,
+    callback: Box<dyn FnMut(&DebugClient, &DebugBreakpoint) -> Result<DebugInstruction>>,
+}
+
+struct CallbackBreakpoints {
+    inner: RefCell<HashMap<GUID, CallbackBreakpointData>>,
+}
+
+impl CallbackBreakpoints {
+    fn new() -> Self {
+        Self {
+            inner: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn insert<T: FnMut(&DebugClient, &DebugBreakpoint) -> Result<DebugInstruction> + 'static>(
+        &self,
+        bp: DebugBreakpoint,
+        cb: T,
+    ) {
+        self.inner
+            .borrow_mut()
+            .insert(bp.guid().unwrap(), CallbackBreakpointData {
+                bp,
+                callback: Box::new(cb),
+            });
+    }
+
+    fn call(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(data) = inner.get_mut(&bp.guid().unwrap()) {
+            match (data.callback)(client, bp) {
+                Ok(i) => i,
+                Err(e) => {
+                    let _ = dbgeng::dlogln!(client, "Error in breakpoint callback: {e:#}");
+                    DebugInstruction::NoChange
+                }
+            }
+        } else {
+            DebugInstruction::NoChange
+        }
+    }
+}
+
 thread_local! {
     static CLIENT: OnceCell<DebugClient> = OnceCell::new();
-    static CALLBACKS: RefCell<HashMap<GUID, Box<dyn FnMut() -> DebugInstruction>>> = RefCell::new(HashMap::new());
+    static BREAKPOINTS: CallbackBreakpoints = CallbackBreakpoints::new();
 }
 
 mod cmd {
@@ -26,16 +71,16 @@ mod cmd {
 
         CLIENT.with(|c| -> anyhow::Result<()> {
             let client: &DebugClient = c.get().context("client not set")?;
+
             let bp = client.add_breakpoint(BreakpointType::Code, None)?;
 
             bp.set_offset_expression("nt!NtCreateUserProcess")?;
             bp.set_flags(BreakpointFlags::ENABLED)?;
 
-            CALLBACKS.with_borrow_mut(|callbacks| {
-                callbacks.insert(
-                    bp.guid().unwrap(),
-                    Box::new(move || -> DebugInstruction { bpproc_create(process_name.clone()) }),
-                );
+            BREAKPOINTS.with(|breakpoints| {
+                breakpoints.insert(bp, move |client, bp| -> Result<DebugInstruction> {
+                    bpproc_create(client, bp, process_name.clone())
+                });
             });
 
             Ok(())
@@ -47,22 +92,40 @@ mod cmd {
     export_cmd!(breakonprocess);
 }
 
-fn bpproc_create(desired_name: String) -> DebugInstruction {
+fn bpproc_create(
+    client: &DebugClient,
+    bp: &DebugBreakpoint,
+    desired_name: String,
+) -> Result<DebugInstruction> {
+    // Read out RTL_USER_PROCESS_PARAMETERS from the stack.
+    let rsp = client.reg64("rsp").context("failed to read rsp")?;
+
+    let nt = client.get_sym_module("ntoskrnl.exe")?;
+
+    // Get the offset to ImagePathName.
+    let image_path_name_offset = nt
+        .get_type("_RTL_USER_PROCESS_PARAMETERS")
+        .context("failed to get _RTL_USER_PROCESS_PARAMETERS")?
+        .get_field_offset("ImagePathName")
+        .context("failed to get ImagePathName offset")?;
+
+    // Read the ImagePathName.
+    let image_path_name = client
+        .read_ustr_virtual(rsp + image_path_name_offset as u64)
+        .context("failed to read ImagePathName")?;
+
+    dlogln!(client, "Image loaded: {image_path_name}")?;
+    Ok(DebugInstruction::NoChange)
+}
+
+fn bpproc_postcreate() -> DebugInstruction {
     DebugInstruction::NoChange
 }
 
 struct PluginEventCallbacks;
 impl EventCallbacks for PluginEventCallbacks {
-    fn breakpoint(&self, _client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {
-        CALLBACKS.with(|c| {
-            let mut callbacks = c.borrow_mut();
-            let id = bp.guid().unwrap();
-            if let Some(callback) = callbacks.get_mut(&id) {
-                callback()
-            } else {
-                DebugInstruction::NoChange
-            }
-        })
+    fn breakpoint(&self, client: &DebugClient, bp: &DebugBreakpoint) -> DebugInstruction {
+        BREAKPOINTS.with(|breakpoints| breakpoints.call(client, bp))
     }
 }
 

@@ -5,3 +5,4 @@ pub mod breakpoint;
 pub mod client;
 pub mod events;
 pub mod export;
+pub mod symbol;
