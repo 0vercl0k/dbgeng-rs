@@ -1,7 +1,9 @@
+use std::panic::AssertUnwindSafe;
+
 use windows::core::{implement, HRESULT};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    IDebugBreakpoint, IDebugEventCallbacks, IDebugEventCallbacks_Impl, DEBUG_STATUS_BREAK,
-    DEBUG_STATUS_GO, DEBUG_STATUS_GO_HANDLED, DEBUG_STATUS_GO_NOT_HANDLED,
+    IDebugBreakpoint, IDebugEventCallbacks, IDebugEventCallbacks_Impl, DEBUG_EVENT_BREAKPOINT,
+    DEBUG_STATUS_BREAK, DEBUG_STATUS_GO, DEBUG_STATUS_GO_HANDLED, DEBUG_STATUS_GO_NOT_HANDLED,
     DEBUG_STATUS_IGNORE_EVENT, DEBUG_STATUS_NO_CHANGE, DEBUG_STATUS_RESTART_REQUESTED,
     DEBUG_STATUS_STEP_BRANCH, DEBUG_STATUS_STEP_INTO, DEBUG_STATUS_STEP_OVER,
 };
@@ -9,7 +11,9 @@ use windows::Win32::System::Diagnostics::Debug::EXCEPTION_RECORD64;
 
 use crate::breakpoint::DebugBreakpoint;
 use crate::client::DebugClient;
+use crate::dlogln;
 
+/// An instruction for the debugger to follow.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DebugInstruction {
     /// Suspend the target.
@@ -72,7 +76,8 @@ impl DbgEventCallbacks {
 
 impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
     fn GetInterestMask(&self) -> windows::core::Result<u32> {
-        todo!()
+        // TODO...
+        Ok(DEBUG_EVENT_BREAKPOINT)
     }
 
     fn Breakpoint(
@@ -85,9 +90,19 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
 
         // N.B: The breakpoint must be represented as "borrowed" because it could be
         // invalid after this callback returns.
-        let res = self
-            .callbacks
-            .breakpoint(&self.client, &DebugBreakpoint::new(bp).unwrap());
+        let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            self.callbacks
+                .breakpoint(&self.client, &DebugBreakpoint::new(bp).unwrap())
+        }));
+
+        let res = match res {
+            Ok(i) => i,
+            Err(panic) => {
+                // If the callback panics, we'll just ignore it and continue.
+                let _ = dlogln!(self.client, "panic in breakpoint callback: {:?}", panic);
+                DebugInstruction::GoNotHandled
+            }
+        };
 
         // N.B: This is pretty lame; the API is declared to return a HRESULT, but it
         // does not actually return a HRESULT. We'll need to shim our return
@@ -99,84 +114,84 @@ impl IDebugEventCallbacks_Impl for DbgEventCallbacks {
 
     fn Exception(
         &self,
-        exception: *const EXCEPTION_RECORD64,
-        firstchance: u32,
+        _exception: *const EXCEPTION_RECORD64,
+        _firstchance: u32,
     ) -> windows::core::Result<()> {
         todo!()
     }
 
     fn CreateThread(
         &self,
-        handle: u64,
-        dataoffset: u64,
-        startoffset: u64,
+        _handle: u64,
+        _dataoffset: u64,
+        _startoffset: u64,
     ) -> windows::core::Result<()> {
         todo!()
     }
 
-    fn ExitThread(&self, exitcode: u32) -> windows::core::Result<()> {
+    fn ExitThread(&self, _exitcode: u32) -> windows::core::Result<()> {
         todo!()
     }
 
     fn CreateProcessA(
         &self,
-        imagefilehandle: u64,
-        handle: u64,
-        baseoffset: u64,
-        modulesize: u32,
-        modulename: &windows::core::PCSTR,
-        imagename: &windows::core::PCSTR,
-        checksum: u32,
-        timedatestamp: u32,
-        initialthreadhandle: u64,
-        threaddataoffset: u64,
-        startoffset: u64,
+        _imagefilehandle: u64,
+        _handle: u64,
+        _baseoffset: u64,
+        _modulesize: u32,
+        _modulename: &windows::core::PCSTR,
+        _imagename: &windows::core::PCSTR,
+        _checksum: u32,
+        _timedatestamp: u32,
+        _initialthreadhandle: u64,
+        _threaddataoffset: u64,
+        _startoffset: u64,
     ) -> windows::core::Result<()> {
         todo!()
     }
 
-    fn ExitProcess(&self, exitcode: u32) -> windows::core::Result<()> {
+    fn ExitProcess(&self, _exitcode: u32) -> windows::core::Result<()> {
         todo!()
     }
 
     fn LoadModule(
         &self,
-        imagefilehandle: u64,
-        baseoffset: u64,
-        modulesize: u32,
-        modulename: &windows::core::PCSTR,
-        imagename: &windows::core::PCSTR,
-        checksum: u32,
-        timedatestamp: u32,
+        _imagefilehandle: u64,
+        _baseoffset: u64,
+        _modulesize: u32,
+        _modulename: &windows::core::PCSTR,
+        _imagename: &windows::core::PCSTR,
+        _checksum: u32,
+        _timedatestamp: u32,
     ) -> windows::core::Result<()> {
         todo!()
     }
 
     fn UnloadModule(
         &self,
-        imagebasename: &windows::core::PCSTR,
-        baseoffset: u64,
+        _imagebasename: &windows::core::PCSTR,
+        _baseoffset: u64,
     ) -> windows::core::Result<()> {
         todo!()
     }
 
-    fn SystemError(&self, error: u32, level: u32) -> windows::core::Result<()> {
+    fn SystemError(&self, _error: u32, _level: u32) -> windows::core::Result<()> {
         todo!()
     }
 
-    fn SessionStatus(&self, status: u32) -> windows::core::Result<()> {
+    fn SessionStatus(&self, _status: u32) -> windows::core::Result<()> {
         todo!()
     }
 
-    fn ChangeDebuggeeState(&self, flags: u32, argument: u64) -> windows::core::Result<()> {
+    fn ChangeDebuggeeState(&self, _flags: u32, _argument: u64) -> windows::core::Result<()> {
         todo!()
     }
 
-    fn ChangeEngineState(&self, flags: u32, argument: u64) -> windows::core::Result<()> {
+    fn ChangeEngineState(&self, _flags: u32, _argument: u64) -> windows::core::Result<()> {
         todo!()
     }
 
-    fn ChangeSymbolState(&self, flags: u32, argument: u64) -> windows::core::Result<()> {
+    fn ChangeSymbolState(&self, _flags: u32, _argument: u64) -> windows::core::Result<()> {
         todo!()
     }
 }

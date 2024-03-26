@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 anyhow = { version = "1.0.81", features = ["std"] }
 dbgeng = { path = "../.." }
+zerocopy = { version = "0.7.32", features = ["derive"] }
 
 [dependencies.windows]
 version = "0.54.0"

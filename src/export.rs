@@ -9,11 +9,11 @@ use crate::dlogln;
 
 #[macro_export]
 macro_rules! export_cmd {
-    ($name:ident) => {
+    ($name:ident, $func:ident) => {
         $crate::export::paste! {
             #[export_name = stringify!($name)]
-            pub extern "C" fn [< __export_ $name >] (raw_client: *mut std::ffi::c_void, args: *const std::ffi::c_char) -> i32 {
-                $crate::export::wrap_cmd(raw_client, args, $name)
+            extern "C" fn [< __export_ $name >] (raw_client: *mut ::std::ffi::c_void, args: *const ::std::ffi::c_char) -> i32 {
+                $crate::export::wrap_cmd(raw_client, args, $func)
             }
         }
     };

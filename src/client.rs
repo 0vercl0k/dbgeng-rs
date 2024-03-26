@@ -7,9 +7,9 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use windows::core::{IUnknown, Interface};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    DebugCreate, IDebugClient8, IDebugControl3, IDebugDataSpaces4, IDebugEventCallbacks,
-    IDebugRegisters, IDebugSymbols, IDebugSymbols3, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE,
-    DEBUG_BREAKPOINT_DATA, DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL,
+    DebugCreate, IDebugClient8, IDebugControl4, IDebugDataSpaces4, IDebugEventCallbacks,
+    IDebugRegisters, IDebugSymbols3, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA,
+    DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_STACK_FRAME,
     DEBUG_VALUE, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64,
     DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8,
     DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64,
@@ -102,14 +102,14 @@ impl Seg {
 /// by avoiding to `format!` everytime the arguments.
 #[macro_export]
 macro_rules! dlogln {
-    ($dbg:ident, $($arg:tt)*) => {{
+    ($dbg:expr, $($arg:tt)*) => {{
         $dbg.logln(format!($($arg)*))
     }};
 }
 
 #[macro_export]
 macro_rules! dlog {
-    ($dbg:ident, $($arg:tt)*) => {{
+    ($dbg:expr, $($arg:tt)*) => {{
         $dbg.log(format!($($arg)*))
     }};
 }
@@ -117,7 +117,7 @@ macro_rules! dlog {
 #[derive(Clone)]
 pub struct DebugClient {
     client: IDebugClient8,
-    control: IDebugControl3,
+    control: IDebugControl4,
     registers: IDebugRegisters,
     dataspaces: IDebugDataSpaces4,
     symbols: IDebugSymbols3,
@@ -154,7 +154,7 @@ impl DebugClient {
     where
         Str: Into<Vec<u8>>,
     {
-        let cstr = CString::new(s.into())?;
+        let cstr = CString::new(s.into()).context("failed to convert output string")?;
         unsafe { self.control.Output(mask, cstr.as_pcstr()) }.context("Output failed")
     }
 
@@ -190,6 +190,27 @@ impl DebugClient {
             )
         }
         .context(format!("Execute({:?}) failed", cstr))
+    }
+
+    /// Get up to N stack frames in the current debugger context.
+    pub fn context_stack_frames(&self, n: usize) -> Result<Vec<DEBUG_STACK_FRAME>> {
+        let mut stack = vec![DEBUG_STACK_FRAME::default(); n];
+        let mut frames_filled = 0;
+        unsafe {
+            self.control.GetContextStackTrace(
+                None,
+                0,
+                Some(&mut stack),
+                None,
+                0,
+                0,
+                Some(&mut frames_filled),
+            )
+        }
+        .context("GetContextStackTrace failed")?;
+
+        stack.resize(frames_filled.try_into()?, DEBUG_STACK_FRAME::default());
+        Ok(stack)
     }
 
     /// Setup an object to receive debugger event callbacks.
@@ -358,6 +379,16 @@ impl DebugClient {
             selector,
             u128::from_le_bytes(descriptor),
         ))
+    }
+
+    /// Read virtual memory as a field.
+    pub fn read_virtual_field<T: zerocopy::AsBytes + zerocopy::FromBytes + zerocopy::FromZeroes>(
+        &self,
+        vaddr: u64,
+    ) -> Result<T> {
+        let mut buffer = T::new_zeroed();
+        self.read_virtual_exact(vaddr, buffer.as_bytes_mut())?;
+        Ok(buffer)
     }
 
     /// Read an exact amount of virtual memory.
