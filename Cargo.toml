@@ -3,7 +3,13 @@ name = "dbgeng"
 version = "0.1.0"
 edition = "2021"
 authors = ["Axel '0vercl0k' Souchet"]
-
+categories = ["api-bindings"]
+description = "Rust binding for the dbgeng COM interfaces."
+include = ["/Cargo.toml", "/LICENSE", "/src/**", "/examples/**", "README.md"]
+keywords = ["windows", "dbgeng", "debugclient"]
+license = "MIT"
+repository = "https://github.com/0vercl0k/dbgeng-rs"
+rust-version = "1.70"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

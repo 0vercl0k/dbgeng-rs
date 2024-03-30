@@ -1,5 +1,5 @@
 <div align='center'>
-  <h1><code>dbgeng-rs</code></h1>
+  <h1><code>dbgeng</code></h1>
   <p>
     <strong>Rust binding for the dbgeng COM interfaces.</strong>
   </p>
