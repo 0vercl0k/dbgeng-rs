@@ -2,7 +2,7 @@
 name = "dbgeng"
 version = "0.1.0"
 edition = "2021"
-authors = ["Axel '0vercl0k' Souchet"]
+authors = ["Axel '0vercl0k' Souchet", "Justin Moore"]
 license = "MIT OR Apache-2.0"
 categories = ["api-bindings"]
 description = "Rust binding for the dbgeng COM interfaces."
