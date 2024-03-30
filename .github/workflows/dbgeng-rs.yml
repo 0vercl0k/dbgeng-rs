@@ -34,6 +34,21 @@ jobs:
           RUSTFLAGS: "-Dwarnings"
         run: cargo clippy
 
+  doc:
+    name: doc
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up rust
+        run: rustup default stable
+
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: "-Dwarnings"
+        run: cargo doc
+
   build:
     runs-on: windows-latest
     name: check & test

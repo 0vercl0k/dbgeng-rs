@@ -1,4 +1,6 @@
 // Axel '0vercl0k' Souchet - January 21 2024
+//! This contains the main class, [`DebugClient`], which is used to interact
+//! with Microsoft's Debug Engine library via the documented COM objects.
 use std::collections::HashMap;
 use std::ffi::CString;
 
@@ -18,7 +20,7 @@ use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
 use crate::as_pcstr::AsPCSTR;
 use crate::bits::Bits;
 
-/// Extract `u128` off a `DEBUG_VALUE`.
+/// Extract [`u128`] off a [`DEBUG_VALUE`].
 pub fn u128_from_debugvalue(v: DEBUG_VALUE) -> Result<u128> {
     let value = match v.Type {
         DEBUG_VALUE_FLOAT80 => {
@@ -38,7 +40,7 @@ pub fn u128_from_debugvalue(v: DEBUG_VALUE) -> Result<u128> {
     Ok(value)
 }
 
-/// Extract a `u64/u32/u16/u8/f64` off a DEBUG_VALUE.
+/// Extract a [`u64`]/[`u32`]/[`u16`]/[`u8`]/[`f64`] off a [`DEBUG_VALUE`].
 pub fn u64_from_debugvalue(v: DEBUG_VALUE) -> Result<u64> {
     let value = match v.Type {
         DEBUG_VALUE_INT64 => {
@@ -62,17 +64,24 @@ pub fn u64_from_debugvalue(v: DEBUG_VALUE) -> Result<u64> {
     Ok(value)
 }
 
+/// Intel x86 segment descriptor.
 #[derive(Default, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Seg {
+    /// Is the segment present?
     pub present: bool,
+    /// Segment selector.
     pub selector: u16,
+    /// Base address.
     pub base: u64,
+    /// Limit.
     pub limit: u32,
+    /// Segment attributes.
     pub attr: u16,
 }
 
 impl Seg {
+    /// Build a [`Seg`] from a `selector` and its raw value as read in the GDT.
     pub fn from_descriptor(selector: u64, value: u128) -> Self {
         let limit = (value.bits(0..=15) | (value.bits(48..=51) << 16)) as u32;
         let mut base = value.bits(16..=39) | (value.bits(56..=63) << 24);
@@ -94,8 +103,8 @@ impl Seg {
     }
 }
 
-/// Macro to make it nicer to invoke `DebugClient::logln` / `DebugClient::log`
-/// by avoiding to `format!` everytime the arguments.
+/// Macro to make it nicer to invoke [`DebugClient::logln`] /
+/// [`DebugClient::log`] by avoiding to [`format!`] everytime the arguments.
 #[macro_export]
 macro_rules! dlogln {
     ($dbg:ident, $($arg:tt)*) => {{
@@ -110,6 +119,9 @@ macro_rules! dlog {
     }};
 }
 
+/// A debug client wraps a bunch of COM interfaces and provides higher level
+/// features such as dumping registers, reading the GDT, reading virtual memory,
+/// etc.
 pub struct DebugClient {
     control: IDebugControl3,
     registers: IDebugRegisters,
@@ -155,7 +167,7 @@ impl DebugClient {
     where
         Str: Into<Vec<u8>>,
     {
-        self.output(DEBUG_OUTPUT_NORMAL, "[snapshot] ")?;
+        self.output(DEBUG_OUTPUT_NORMAL, "[dbgeng-rs] ")?;
         self.output(DEBUG_OUTPUT_NORMAL, args)?;
         self.output(DEBUG_OUTPUT_NORMAL, "\n")
     }
@@ -173,7 +185,7 @@ impl DebugClient {
                 DEBUG_EXECUTE_DEFAULT,
             )
         }
-        .context(format!("Execute({:?}) failed", cstr))
+        .with_context(|| format!("Execute({:?}) failed", cstr))
     }
 
     /// Get the register indices from names.
@@ -184,7 +196,7 @@ impl DebugClient {
                 self.registers
                     .GetIndexByName(CString::new(*name)?.as_pcstr())
             }
-            .context(format!("GetIndexByName failed for {name}"))?;
+            .with_context(|| format!("GetIndexByName failed for {name}"))?;
 
             indices.push(indice);
         }
@@ -203,12 +215,12 @@ impl DebugClient {
                 values.as_mut_ptr(),
             )
         }
-        .context(format!("GetValues failed for {indices:?}"))?;
+        .with_context(|| format!("GetValues failed for {indices:?}"))?;
 
         Ok(values)
     }
 
-    /// Get `u128` values for the registers identified by their names.
+    /// Get [`u128`] values for the registers identified by their names.
     pub fn regs128(&self, names: &[&str]) -> Result<Vec<u128>> {
         let indices = self.reg_indices(names)?;
         let values = self.reg_values(&indices)?;
@@ -216,7 +228,7 @@ impl DebugClient {
         values.into_iter().map(u128_from_debugvalue).collect()
     }
 
-    /// Get `u128` values for the registers identified by their names but
+    /// Get [`u128`] values for the registers identified by their names but
     /// returned in a dictionary with their names.
     pub fn regs128_dict<'a>(&self, names: &[&'a str]) -> Result<HashMap<&'a str, u128>> {
         let values = self.regs128(names)?;
