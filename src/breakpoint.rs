@@ -21,7 +21,6 @@ bitflags! {
         /// Breakpoint deferred until symbols are loaded. This flag cannot be set or changed.
         const DEFERRED = DEBUG_BREAKPOINT_DEFERRED;
     }
-
 }
 
 pub enum BreakpointType {

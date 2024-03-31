@@ -222,6 +222,7 @@ impl DebugClient {
         .context("GetContextStackTrace failed")?;
 
         stack.resize(frames_filled.try_into()?, DEBUG_STACK_FRAME::default());
+
         Ok(stack)
     }
 
@@ -394,12 +395,15 @@ impl DebugClient {
     }
 
     /// Read virtual memory as a field.
-    pub fn read_virtual_field<T: zerocopy::AsBytes + zerocopy::FromBytes + zerocopy::FromZeroes>(
+    pub fn read_virtual_struct<
+        T: zerocopy::AsBytes + zerocopy::FromBytes + zerocopy::FromZeroes,
+    >(
         &self,
         vaddr: u64,
     ) -> Result<T> {
         let mut buffer = T::new_zeroed();
         self.read_virtual_exact(vaddr, buffer.as_bytes_mut())?;
+
         Ok(buffer)
     }
 
@@ -502,9 +506,7 @@ impl DebugClient {
         Ok(String::from_utf8_lossy(&buffer).into_owned())
     }
 
-    /// Read a UNICODE_STRING at `addr`.
-    /// FIXME: This might not be the right way to do this.
-    pub fn read_ustr_virtual(&self, addr: u64) -> Result<String> {
+    pub fn read_wstring_virtual(&self, addr: u64) -> Result<String> {
         let maxbytes = 100;
         let mut buffer = vec![0; maxbytes];
         let mut length = 0;

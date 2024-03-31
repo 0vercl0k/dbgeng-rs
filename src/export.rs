@@ -28,7 +28,7 @@ pub fn wrap_cmd<E: Display>(
 ) -> i32 {
     let args = PCSTR(args as *const _);
 
-    // We do not own the `raw_client` interface  so we want to created a borrow. If
+    // We do not own the `raw_client` interface so we want to create a borrow. If
     // we don't, the object will get Release()'d when it gets dropped which will
     // lead to a use-after-free.
     let Some(client) = (unsafe { IUnknown::from_raw_borrowed(&raw_client) }) else {

@@ -18,14 +18,15 @@ use crate::dlogln;
 pub enum DebugInstruction {
     /// Suspend the target.
     Break,
-    /// Continue execution for a single instruction.
+    /// Continue execution for a single instruction (stepping into call
+    /// instructions).
     StepInto,
     /// Continue execution until the next branch instruction.
     StepBranch,
     /// Continue execution for a single instruction, stepping over call
     /// instructions.
     StepOver,
-    /// Continue execution and flag the event as unhandled.
+    /// Continue execution and set the event as unhandled.
     GoNotHandled,
     /// Continue execution and flag the event as handled.
     GoHandled,

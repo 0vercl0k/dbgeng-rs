@@ -1,3 +1,4 @@
+// Justin Moore - March 30 2024
 use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::sync::Once;
@@ -200,8 +201,8 @@ fn bpproc_postcreate(
 ) -> Result<DebugInstruction> {
     // Read the handles, ensuring that we truncate the upper 48 bits
     // (which indicates if a handle belongs to the kernel).
-    let proc_handle = client.read_virtual_field::<u64>(p_proc_handle)? & 0xFFFF;
-    let thrd_handle = client.read_virtual_field::<u64>(p_thrd_handle)? & 0xFFFF;
+    let proc_handle = client.read_virtual_struct::<u64>(p_proc_handle)? & 0xFFFF;
+    let thrd_handle = client.read_virtual_struct::<u64>(p_thrd_handle)? & 0xFFFF;
 
     Ok(DebugInstruction::NoChange)
 }
