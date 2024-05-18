@@ -7,18 +7,22 @@ use std::ffi::CString;
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use windows::core::{ComInterface, IUnknown};
+use windows::core::{IUnknown, Interface};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    IDebugControl3, IDebugDataSpaces4, IDebugRegisters, IDebugSymbols, DEBUG_EXECUTE_DEFAULT,
-    DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_VALUE, DEBUG_VALUE_FLOAT128,
-    DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16,
-    DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8, DEBUG_VALUE_VECTOR128,
-    DEBUG_VALUE_VECTOR64,
+    DebugCreate, IDebugClient8, IDebugControl4, IDebugDataSpaces4, IDebugEventCallbacks,
+    IDebugRegisters, IDebugSymbols3, DEBUG_ANY_ID, DEBUG_BREAKPOINT_CODE, DEBUG_BREAKPOINT_DATA,
+    DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_STACK_FRAME,
+    DEBUG_VALUE, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64,
+    DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8,
+    DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64,
 };
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
 
 use crate::as_pcstr::AsPCSTR;
 use crate::bits::Bits;
+use crate::breakpoint::{BreakpointType, DebugBreakpoint};
+use crate::events::{DbgEventCallbacks, EventCallbacks};
+use crate::symbol::SymbolModule;
 
 /// Extract [`u128`] off a [`DEBUG_VALUE`].
 pub fn u128_from_debugvalue(v: DEBUG_VALUE) -> Result<u128> {
@@ -107,26 +111,28 @@ impl Seg {
 /// [`DebugClient::log`] by avoiding to [`format!`] everytime the arguments.
 #[macro_export]
 macro_rules! dlogln {
-    ($dbg:ident, $($arg:tt)*) => {{
+    ($dbg:expr, $($arg:tt)*) => {{
         $dbg.logln(format!($($arg)*))
     }};
 }
 
 #[macro_export]
 macro_rules! dlog {
-    ($dbg:ident, $($arg:tt)*) => {{
+    ($dbg:expr, $($arg:tt)*) => {{
         $dbg.log(format!($($arg)*))
     }};
 }
 
+#[derive(Clone)]
 /// A debug client wraps a bunch of COM interfaces and provides higher level
 /// features such as dumping registers, reading the GDT, reading virtual memory,
 /// etc.
 pub struct DebugClient {
-    control: IDebugControl3,
+    client: IDebugClient8,
+    control: IDebugControl4,
     registers: IDebugRegisters,
     dataspaces: IDebugDataSpaces4,
-    symbols: IDebugSymbols,
+    symbols: IDebugSymbols3,
 }
 
 impl DebugClient {
@@ -135,8 +141,10 @@ impl DebugClient {
         let registers = client.cast()?;
         let dataspaces = client.cast()?;
         let symbols = client.cast()?;
+        let client = client.cast()?;
 
         Ok(Self {
+            client,
             control,
             registers,
             dataspaces,
@@ -144,12 +152,21 @@ impl DebugClient {
         })
     }
 
+    /// Create a new instance of the debug client interface.
+    pub fn create() -> Result<Self> {
+        unsafe {
+            DebugCreate::<IUnknown>()
+                .map(|c| Self::new(&c).unwrap())
+                .map_err(|e| e.into())
+        }
+    }
+
     /// Output a message `s`.
     fn output<Str>(&self, mask: u32, s: Str) -> Result<()>
     where
         Str: Into<Vec<u8>>,
     {
-        let cstr = CString::new(s.into())?;
+        let cstr = CString::new(s.into()).context("failed to convert output string")?;
         unsafe { self.control.Output(mask, cstr.as_pcstr()) }.context("Output failed")
     }
 
@@ -167,7 +184,6 @@ impl DebugClient {
     where
         Str: Into<Vec<u8>>,
     {
-        self.output(DEBUG_OUTPUT_NORMAL, "[dbgeng-rs] ")?;
         self.output(DEBUG_OUTPUT_NORMAL, args)?;
         self.output(DEBUG_OUTPUT_NORMAL, "\n")
     }
@@ -186,6 +202,60 @@ impl DebugClient {
             )
         }
         .with_context(|| format!("Execute({:?}) failed", cstr))
+    }
+
+    /// Get up to N stack frames in the current debugger context.
+    pub fn context_stack_frames(&self, n: usize) -> Result<Vec<DEBUG_STACK_FRAME>> {
+        let mut stack = vec![DEBUG_STACK_FRAME::default(); n];
+        let mut frames_filled = 0;
+        unsafe {
+            self.control.GetContextStackTrace(
+                None,
+                0,
+                Some(&mut stack),
+                None,
+                0,
+                0,
+                Some(&mut frames_filled),
+            )
+        }
+        .context("GetContextStackTrace failed")?;
+
+        stack.resize(frames_filled.try_into()?, DEBUG_STACK_FRAME::default());
+
+        Ok(stack)
+    }
+
+    /// Setup an object to receive debugger event callbacks.
+    pub fn set_event_callbacks<E: EventCallbacks + 'static>(&self, e: E) -> Result<()> {
+        let callbacks = Box::new(e);
+        let callbacks: IUnknown = DbgEventCallbacks::new(self.clone(), callbacks).into();
+
+        unsafe {
+            self.client
+                .SetEventCallbacks(&callbacks.cast::<IDebugEventCallbacks>()?)
+        }
+        .context("SetEventCallbacks failed")
+    }
+
+    /// Create a new breakpoint.
+    pub fn add_breakpoint(
+        &self,
+        ty: BreakpointType,
+        desired_id: Option<u32>,
+    ) -> Result<DebugBreakpoint> {
+        let bp = unsafe {
+            self.control.AddBreakpoint(
+                match ty {
+                    BreakpointType::Code => DEBUG_BREAKPOINT_CODE,
+                    BreakpointType::Data => DEBUG_BREAKPOINT_DATA,
+                },
+                desired_id.unwrap_or(DEBUG_ANY_ID),
+            )
+        }
+        .context("AddBreakpoint failed")?;
+
+        DebugBreakpoint::new(bp)
     }
 
     /// Get the register indices from names.
@@ -325,6 +395,19 @@ impl DebugClient {
         ))
     }
 
+    /// Read virtual memory as a field.
+    pub fn read_virtual_struct<
+        T: zerocopy::AsBytes + zerocopy::FromBytes + zerocopy::FromZeroes,
+    >(
+        &self,
+        vaddr: u64,
+    ) -> Result<T> {
+        let mut buffer = T::new_zeroed();
+        self.read_virtual_exact(vaddr, buffer.as_bytes_mut())?;
+
+        Ok(buffer)
+    }
+
     /// Read an exact amount of virtual memory.
     pub fn read_virtual_exact(&self, vaddr: u64, buf: &mut [u8]) -> Result<()> {
         let amount_read = self.read_virtual(vaddr, buf)?;
@@ -353,6 +436,19 @@ impl DebugClient {
         .context("ReadVirtual failed")?;
 
         Ok(usize::try_from(amount_read)?)
+    }
+
+    /// Look up a module by name.
+    pub fn get_sym_module(&self, name: &str) -> Result<SymbolModule> {
+        let name_cstr = CString::new(name).context("failed to wrap module string")?;
+        let mut base = 0u64;
+        unsafe {
+            self.symbols
+                .GetModuleByModuleName(name_cstr.as_pcstr(), 0, None, Some(&mut base))
+        }
+        .context("GetModuleByModuleName failed")?;
+
+        Ok(SymbolModule::new(self.symbols.clone(), base))
     }
 
     /// Get the debuggee type.
@@ -389,7 +485,7 @@ impl DebugClient {
     }
 
     /// Read a NULL terminated string at `addr`.
-    pub fn read_cstring(&self, addr: u64) -> Result<String> {
+    pub fn read_cstring_virtual(&self, addr: u64) -> Result<String> {
         let maxbytes = 100;
         let mut buffer = vec![0; maxbytes];
         let mut length = 0;
@@ -401,6 +497,31 @@ impl DebugClient {
                 Some(&mut length),
             )
         }?;
+
+        if length == 0 {
+            bail!("length is zero")
+        }
+
+        let length = length as usize;
+        buffer.resize(length - 1, 0);
+
+        Ok(String::from_utf8_lossy(&buffer).into_owned())
+    }
+
+    pub fn read_wstring_virtual(&self, addr: u64) -> Result<String> {
+        let maxbytes = 100;
+        let mut buffer = vec![0; maxbytes];
+        let mut length = 0;
+        unsafe {
+            self.dataspaces.ReadUnicodeStringVirtual(
+                addr,
+                maxbytes as u32,
+                65001, // CP_UTF8
+                Some(&mut buffer),
+                Some(&mut length),
+            )
+        }
+        .context("ReadUnicodeStringVirtual failed")?;
 
         if length == 0 {
             bail!("length is zero")
