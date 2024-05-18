@@ -37,6 +37,7 @@ pub struct DebugBreakpoint(IDebugBreakpoint3);
 impl DebugBreakpoint {
     pub fn new<I: Into<IUnknown>>(bp: I) -> Result<Self> {
         let bp = bp.into().cast()?;
+
         Ok(Self(bp))
     }
 
@@ -44,6 +45,7 @@ impl DebugBreakpoint {
     /// ID will uniquely refer to this breakpoint.
     pub fn id(&self) -> Result<u32> {
         let id = unsafe { self.0.GetId() }?;
+        
         Ok(id)
     }
 
