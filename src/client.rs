@@ -252,7 +252,8 @@ impl DebugClient {
                 },
                 desired_id.unwrap_or(DEBUG_ANY_ID),
             )
-        }?;
+        }
+        .context("AddBreakpoint failed")?;
 
         DebugBreakpoint::new(bp)
     }
@@ -439,12 +440,13 @@ impl DebugClient {
 
     /// Look up a module by name.
     pub fn get_sym_module(&self, name: &str) -> Result<SymbolModule> {
-        let name_cstr = CString::new(name)?;
+        let name_cstr = CString::new(name).context("failed to wrap module string")?;
         let mut base = 0u64;
         unsafe {
             self.symbols
                 .GetModuleByModuleName(name_cstr.as_pcstr(), 0, None, Some(&mut base))
-        }?;
+        }
+        .context("GetModuleByModuleName failed")?;
 
         Ok(SymbolModule::new(self.symbols.clone(), base))
     }
@@ -518,7 +520,8 @@ impl DebugClient {
                 Some(&mut buffer),
                 Some(&mut length),
             )
-        }?;
+        }
+        .context("ReadUnicodeStringVirtual failed")?;
 
         if length == 0 {
             bail!("length is zero")
