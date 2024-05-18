@@ -45,7 +45,7 @@ impl DebugBreakpoint {
     /// ID will uniquely refer to this breakpoint.
     pub fn id(&self) -> Result<u32> {
         let id = unsafe { self.0.GetId() }?;
-        
+
         Ok(id)
     }
 
