@@ -1,0 +1,20 @@
+[package]
+name = "dbgeng"
+version = "0.1.0"
+edition = "2021"
+authors = ["Axel '0vercl0k' Souchet"]
+categories = ["api-bindings"]
+description = "Rust binding for the dbgeng COM interfaces."
+include = ["/Cargo.toml", "/LICENSE", "/src/**", "/examples/**", "README.md"]
+keywords = ["windows", "dbgeng", "debugclient"]
+license = "MIT"
+repository = "https://github.com/0vercl0k/dbgeng-rs"
+rust-version = "1.70"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+bitflags = "2.4.2"
+anyhow = { version = "1.0.79" }
+windows = { version = "0.52.0", features = ["Win32_Foundation", "Win32_System", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_Debug_Extensions", "Win32_System_SystemInformation" ] }
