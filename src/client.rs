@@ -93,6 +93,12 @@ impl Seg {
             base |= value.bits(64..=95) << 32;
         }
 
+        let granularity = value.bit(55) == 1;
+        let increment = if granularity { 0x1_000 } else { 1 };
+        let limit = limit
+            .wrapping_mul(increment)
+            .wrapping_add(if granularity { 0xfff } else { 0 });
+
         Seg {
             present,
             selector,
@@ -100,6 +106,10 @@ impl Seg {
             limit,
             attr,
         }
+    }
+
+    pub fn end_addr(&self) -> u64 {
+        self.base.wrapping_add(self.limit.into())
     }
 }
 
@@ -410,5 +420,32 @@ impl DebugClient {
         buffer.resize(length - 1, 0);
 
         Ok(String::from_utf8_lossy(&buffer).into_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Seg;
+
+    #[test]
+    fn gdt() {
+        // 32-bit compatibility mode for Windows x64.
+        let s = Seg::from_descriptor(0x23, 0xcffb00_0000ffff);
+        assert_eq!(s.end_addr(), 0xffffffff);
+
+        // Regular code segment for Windows x64.
+        let s = Seg::from_descriptor(0x33, 0x20fb00_00000000);
+        assert_eq!(s.base, 0);
+        assert_eq!(s.end_addr(), 0);
+
+        // TSS64 segment.
+        let s = Seg::from_descriptor(0x40, 0xfffff805_3f008b16_90000067);
+        assert_eq!(s.base, 0xfffff805_3f169000);
+        assert_eq!(s.end_addr(), 0xfffff805_3f169067);
+
+        // TEB32 of a WOW64 process.
+        let s = Seg::from_descriptor(0x53, 0x740f33a_30003c00);
+        assert_eq!(s.base, 0x73a3000);
+        assert_eq!(s.end_addr(), 0x73a6c00);
     }
 }
