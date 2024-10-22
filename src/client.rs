@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use windows::core::{ComInterface, IUnknown};
+use windows::core::{IUnknown, Interface};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
     IDebugControl3, IDebugDataSpaces4, IDebugRegisters, IDebugSymbols3, DEBUG_ADDSYNTHMOD_DEFAULT,
     DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_VALUE,
