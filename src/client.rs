@@ -2,20 +2,26 @@
 //! This contains the main class, [`DebugClient`], which is used to interact
 //! with Microsoft's Debug Engine library via the documented COM objects.
 use std::collections::HashMap;
-use std::ffi::CString;
+use std::ffi::{c_void, CString, OsStr};
+use std::mem::MaybeUninit;
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use windows::core::{ComInterface, IUnknown};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    IDebugControl3, IDebugDataSpaces4, IDebugRegisters, IDebugSymbols, DEBUG_EXECUTE_DEFAULT,
-    DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_VALUE, DEBUG_VALUE_FLOAT128,
-    DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80, DEBUG_VALUE_INT16,
-    DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8, DEBUG_VALUE_VECTOR128,
-    DEBUG_VALUE_VECTOR64,
+    IDebugControl3, IDebugDataSpaces4, IDebugRegisters, IDebugSymbols3, DEBUG_ADDSYNTHMOD_DEFAULT,
+    DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_VALUE,
+    DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80,
+    DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8,
+    DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64,
 };
+use windows::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32;
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
+use windows::Win32::System::SystemServices::{
+    IMAGE_DOS_HEADER, IMAGE_DOS_SIGNATURE, IMAGE_NT_SIGNATURE,
+};
 
 use crate::as_pcstr::AsPCSTR;
 use crate::bits::Bits;
@@ -136,7 +142,7 @@ pub struct DebugClient {
     control: IDebugControl3,
     registers: IDebugRegisters,
     dataspaces: IDebugDataSpaces4,
-    symbols: IDebugSymbols,
+    symbols: IDebugSymbols3,
 }
 
 impl DebugClient {
@@ -420,6 +426,120 @@ impl DebugClient {
         buffer.resize(length - 1, 0);
 
         Ok(String::from_utf8_lossy(&buffer).into_owned())
+    }
+
+    /// Evaluate an expression as a u64
+    pub fn eval64<Str>(&self, expr: Str) -> Result<u64>
+    where
+        Str: Into<Vec<u8>>,
+    {
+        let expr = CString::new(expr.into())?;
+        let mut val = DEBUG_VALUE::default();
+        unsafe {
+            self.control
+                .Evaluate(expr.as_pcstr(), DEBUG_VALUE_INT64, &mut val, None)?;
+            Ok(val.Anonymous.Anonymous.I64)
+        }
+    }
+
+    /// Add a synthetic module from a PE base
+    pub fn add_synthetic_module<Str1, Str2>(
+        &self,
+        base_expr: Str1,
+        module_name: Str2,
+        module_path: PathBuf,
+    ) -> Result<()>
+    where
+        Str1: Into<Vec<u8>>,
+        Str2: Into<Vec<u8>>,
+    {
+        // let's evaluate the expression and get the pointer
+        let baseptr = self.eval64(base_expr)?;
+
+        // read the DOS header
+        let dos_header = unsafe { self.read_type_virtual::<IMAGE_DOS_HEADER>(baseptr)? };
+        if dos_header.e_magic != IMAGE_DOS_SIGNATURE {
+            bail!("Bad DOS header signature at {baseptr:#x}");
+        }
+
+        // we can use IMAGE_NT_HEADERS32 because SizeOfImage is at the same
+        // offset for 32- and 64- bit
+        let nt_header_addr = baseptr + dos_header.e_lfanew as u64;
+        let nt_headers = unsafe { self.read_type_virtual::<IMAGE_NT_HEADERS32>(nt_header_addr)? };
+        if nt_headers.Signature != IMAGE_NT_SIGNATURE {
+            bail!("Bad NT header signature at {nt_header_addr:#x}")
+        }
+
+        let image_size = nt_headers.OptionalHeader.SizeOfImage;
+        let imagepath = CString::new(
+            module_path
+                .canonicalize()?
+                .to_str()
+                .context("Path is not valid")?,
+        )?;
+        let modulename = CString::new(module_name)?;
+        let moduleimage = CString::new(
+            module_path
+                .file_name()
+                .and_then(OsStr::to_str)
+                .context("No filename present")?,
+        )?;
+        unsafe {
+            // add synthetic module
+            self.symbols.AddSyntheticModule(
+                baseptr,
+                image_size,
+                imagepath.as_pcstr(),
+                modulename.as_pcstr(),
+                DEBUG_ADDSYNTHMOD_DEFAULT,
+            )?;
+            // reload symbols for the new module, must do it by full DLL name
+            self.symbols
+                .Reload(moduleimage.as_pcstr())
+                .map_err(anyhow::Error::from)
+        }
+    }
+
+    /// Remove a synthetic module by base address
+    pub fn remove_synthetic_module(&self, base: u64) -> Result<()> {
+        unsafe {
+            self.symbols
+                .RemoveSyntheticModule(base)
+                .map_err(anyhow::Error::from)
+        }
+    }
+
+    /// Remove a synthetic module by name
+    pub fn remove_synthetic_module_by_name<Str>(&self, name: Str) -> Result<()>
+    where
+        Str: Into<Vec<u8>>,
+    {
+        let mut base = 0u64;
+        let name = CString::new(name)?;
+        unsafe {
+            self.symbols
+                .GetModuleByModuleName(name.as_pcstr(), 0, None, Some(&mut base))?;
+            self.remove_synthetic_module(base)
+        }
+    }
+
+    /// Read a sized type from debugger memory
+    /// # Safety
+    /// Caller needs to make sure the type is valid
+    pub unsafe fn read_type_virtual<T>(&self, vaddr: u64) -> Result<T> {
+        let mut ty = MaybeUninit::<T>::uninit();
+        let mut nread = 0u32;
+        let typesz = core::mem::size_of::<T>();
+        self.dataspaces.ReadVirtual(
+            vaddr,
+            ty.as_mut_ptr() as *mut c_void,
+            typesz as u32,
+            Some(&mut nread),
+        )?;
+        if nread as usize != typesz {
+            bail!("Invalid length read for type");
+        }
+        Ok(ty.assume_init())
     }
 }
 
