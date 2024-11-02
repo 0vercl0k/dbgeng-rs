@@ -2,7 +2,7 @@
 //! This contains the main class, [`DebugClient`], which is used to interact
 //! with Microsoft's Debug Engine library via the documented COM objects.
 use std::collections::HashMap;
-use std::ffi::{c_void, CString, OsStr};
+use std::ffi::{CString, OsStr};
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 
@@ -428,7 +428,7 @@ impl DebugClient {
         Ok(String::from_utf8_lossy(&buffer).into_owned())
     }
 
-    /// Evaluate an expression as a u64
+    /// Evaluate an expression as a u64.
     pub fn eval64<Str>(&self, expr: Str) -> Result<u64>
     where
         Str: Into<Vec<u8>>,
@@ -437,12 +437,13 @@ impl DebugClient {
         let mut val = DEBUG_VALUE::default();
         unsafe {
             self.control
-                .Evaluate(expr.as_pcstr(), DEBUG_VALUE_INT64, &mut val, None)?;
-            Ok(val.Anonymous.Anonymous.I64)
-        }
+                .Evaluate(expr.as_pcstr(), DEBUG_VALUE_INT64, &mut val, None)
+        }?;
+
+        Ok(unsafe { val.Anonymous.Anonymous.I64 })
     }
 
-    /// Add a synthetic module from a PE base
+    /// Add a synthetic module from a PE base.
     pub fn add_synthetic_module<Str1, Str2>(
         &self,
         base_expr: Str1,
@@ -453,19 +454,22 @@ impl DebugClient {
         Str1: Into<Vec<u8>>,
         Str2: Into<Vec<u8>>,
     {
-        // let's evaluate the expression and get the pointer
+        // Let's evaluate the expression and get the pointer..
         let baseptr = self.eval64(base_expr)?;
 
-        // read the DOS header
-        let dos_header = unsafe { self.read_type_virtual::<IMAGE_DOS_HEADER>(baseptr)? };
+        // ..read the DOS header..
+        let dos_header = unsafe { self.read_type_virtual::<IMAGE_DOS_HEADER>(baseptr) }?;
         if dos_header.e_magic != IMAGE_DOS_SIGNATURE {
             bail!("Bad DOS header signature at {baseptr:#x}");
         }
 
-        // we can use IMAGE_NT_HEADERS32 because SizeOfImage is at the same
-        // offset for 32- and 64- bit
-        let nt_header_addr = baseptr + dos_header.e_lfanew as u64;
-        let nt_headers = unsafe { self.read_type_virtual::<IMAGE_NT_HEADERS32>(nt_header_addr)? };
+        // ..we can use `IMAGE_NT_HEADERS32` because `SizeOfImage` is at the same offset
+        // for 32/64 bit
+        let Some(nt_header_addr) = baseptr.checked_add(dos_header.e_lfanew as u64) else {
+            bail!("Overflow when calculating NT header base address");
+        };
+
+        let nt_headers = unsafe { self.read_type_virtual::<IMAGE_NT_HEADERS32>(nt_header_addr) }?;
         if nt_headers.Signature != IMAGE_NT_SIGNATURE {
             bail!("Bad NT header signature at {nt_header_addr:#x}")
         }
@@ -484,32 +488,28 @@ impl DebugClient {
                 .and_then(OsStr::to_str)
                 .context("No filename present")?,
         )?;
+
         unsafe {
-            // add synthetic module
             self.symbols.AddSyntheticModule(
                 baseptr,
                 image_size,
                 imagepath.as_pcstr(),
                 modulename.as_pcstr(),
                 DEBUG_ADDSYNTHMOD_DEFAULT,
-            )?;
-            // reload symbols for the new module, must do it by full DLL name
-            self.symbols
-                .Reload(moduleimage.as_pcstr())
-                .map_err(anyhow::Error::from)
-        }
+            )
+        }?;
+
+        // Reload symbols for the new module, must do it w/ full DLL name
+        unsafe { self.symbols.Reload(moduleimage.as_pcstr()) }
+            .context("failed to reload after adding syn module")
     }
 
-    /// Remove a synthetic module by base address
+    /// Remove a synthetic module by base address.
     pub fn remove_synthetic_module(&self, base: u64) -> Result<()> {
-        unsafe {
-            self.symbols
-                .RemoveSyntheticModule(base)
-                .map_err(anyhow::Error::from)
-        }
+        unsafe { self.symbols.RemoveSyntheticModule(base) }.context("failed to remove syn module")
     }
 
-    /// Remove a synthetic module by name
+    /// Remove a synthetic module by name.
     pub fn remove_synthetic_module_by_name<Str>(&self, name: Str) -> Result<()>
     where
         Str: Into<Vec<u8>>,
@@ -518,27 +518,33 @@ impl DebugClient {
         let name = CString::new(name)?;
         unsafe {
             self.symbols
-                .GetModuleByModuleName(name.as_pcstr(), 0, None, Some(&mut base))?;
-            self.remove_synthetic_module(base)
-        }
+                .GetModuleByModuleName(name.as_pcstr(), 0, None, Some(&mut base))
+        }?;
+
+        self.remove_synthetic_module(base)
     }
 
-    /// Read a sized type from debugger memory
+    /// Read a sized type from debugger memory.
+    ///
     /// # Safety
-    /// Caller needs to make sure the type is valid
+    ///
+    /// Caller needs to make sure the type is valid.
     pub unsafe fn read_type_virtual<T>(&self, vaddr: u64) -> Result<T> {
         let mut ty = MaybeUninit::<T>::uninit();
         let mut nread = 0u32;
-        let typesz = core::mem::size_of::<T>();
+        let typesz = size_of::<T>();
+
         self.dataspaces.ReadVirtual(
             vaddr,
-            ty.as_mut_ptr() as *mut c_void,
+            ty.as_mut_ptr() as _,
             typesz as u32,
             Some(&mut nread),
         )?;
+
         if nread as usize != typesz {
             bail!("Invalid length read for type");
         }
+
         Ok(ty.assume_init())
     }
 }

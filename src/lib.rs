@@ -6,5 +6,5 @@ pub mod client;
 #[allow(non_snake_case)]
 #[inline(always)]
 pub fn DEBUG_EXTENSION_VERSION(major: u32, minor: u32) -> u32 {
-    ((major & 0xffff) << 16) | (minor & 0xffff)
+    ((major & 0xff_ff) << 16) | (minor & 0xff_ff)
 }
