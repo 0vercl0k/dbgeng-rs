@@ -6,22 +6,22 @@ use std::ffi::{CString, OsStr};
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use windows::core::{IUnknown, Interface};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    IDebugControl3, IDebugDataSpaces4, IDebugRegisters, IDebugSymbols3, DEBUG_ADDSYNTHMOD_DEFAULT,
-    DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS, DEBUG_OUTPUT_NORMAL, DEBUG_VALUE,
-    DEBUG_VALUE_FLOAT128, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64, DEBUG_VALUE_FLOAT80,
-    DEBUG_VALUE_INT16, DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_INT8,
-    DEBUG_VALUE_VECTOR128, DEBUG_VALUE_VECTOR64,
+    DEBUG_ADDSYNTHMOD_DEFAULT, DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS,
+    DEBUG_OUTPUT_NORMAL, DEBUG_VALUE, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64,
+    DEBUG_VALUE_FLOAT80, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_INT8, DEBUG_VALUE_INT16,
+    DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_VECTOR64, DEBUG_VALUE_VECTOR128,
+    IDebugControl3, IDebugDataSpaces4, IDebugRegisters, IDebugSymbols3,
 };
 use windows::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32;
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
 use windows::Win32::System::SystemServices::{
     IMAGE_DOS_HEADER, IMAGE_DOS_SIGNATURE, IMAGE_NT_SIGNATURE,
 };
+use windows::core::{IUnknown, Interface};
 
 use crate::as_pcstr::AsPCSTR;
 use crate::bits::Bits;
@@ -201,7 +201,7 @@ impl DebugClient {
                 DEBUG_EXECUTE_DEFAULT,
             )
         }
-        .with_context(|| format!("Execute({:?}) failed", cstr))
+        .with_context(|| format!("Execute({cstr:?}) failed"))
     }
 
     /// Get the register indices from names.
@@ -316,7 +316,9 @@ impl DebugClient {
         assert!((gdt_limit + 1) % 8 == 0);
         let max_index = (gdt_limit + 1) / 8;
         if index >= max_index {
-            bail!("the selector {selector:#x} has an index ({index:#x}) larger than the maximum allowed ({max_index:#})");
+            bail!(
+                "the selector {selector:#x} has an index ({index:#x}) larger than the maximum allowed ({max_index:#})"
+            );
         }
 
         // Most GDT entries are 8 bytes long but some are 16, so accounting for that.
@@ -458,7 +460,7 @@ impl DebugClient {
         let baseptr = self.eval64(base_expr)?;
 
         // ..read the DOS header..
-        let dos_header = unsafe { self.read_type_virtual::<IMAGE_DOS_HEADER>(baseptr) }?;
+        let dos_header = self.read_type_virtual::<IMAGE_DOS_HEADER>(baseptr)?;
         if dos_header.e_magic != IMAGE_DOS_SIGNATURE {
             bail!("Bad DOS header signature at {baseptr:#x}");
         }
@@ -469,7 +471,7 @@ impl DebugClient {
             bail!("Overflow when calculating NT header base address");
         };
 
-        let nt_headers = unsafe { self.read_type_virtual::<IMAGE_NT_HEADERS32>(nt_header_addr) }?;
+        let nt_headers = self.read_type_virtual::<IMAGE_NT_HEADERS32>(nt_header_addr)?;
         if nt_headers.Signature != IMAGE_NT_SIGNATURE {
             bail!("Bad NT header signature at {nt_header_addr:#x}")
         }
@@ -529,23 +531,24 @@ impl DebugClient {
     /// # Safety
     ///
     /// Caller needs to make sure the type is valid.
-    pub unsafe fn read_type_virtual<T>(&self, vaddr: u64) -> Result<T> {
+    pub fn read_type_virtual<T>(&self, vaddr: u64) -> Result<T> {
         let mut ty = MaybeUninit::<T>::uninit();
         let mut nread = 0u32;
         let typesz = size_of::<T>();
 
-        self.dataspaces.ReadVirtual(
-            vaddr,
-            ty.as_mut_ptr() as _,
-            typesz as u32,
-            Some(&mut nread),
-        )?;
-
+        unsafe {
+            self.dataspaces.ReadVirtual(
+                vaddr,
+                ty.as_mut_ptr() as _,
+                typesz as u32,
+                Some(&mut nread),
+            )?;
+        }
         if nread as usize != typesz {
             bail!("Invalid length read for type");
         }
 
-        Ok(ty.assume_init())
+        Ok(unsafe { ty.assume_init() })
     }
 }
 
