@@ -2,6 +2,7 @@
 pub mod as_pcstr;
 pub mod bits;
 pub mod client;
+pub use windows;
 
 #[allow(non_snake_case)]
 #[inline(always)]
