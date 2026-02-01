@@ -158,20 +158,19 @@ impl DebugOutputCallbacksInner {
 
 #[implement(IDebugOutputCallbacks)]
 struct DebugOutputCallbacks {
-    inner: Mutex<RefCell<DebugOutputCallbacksInner>>,
+    inner: RefCell<DebugOutputCallbacksInner>,
 }
 
 impl DebugOutputCallbacks {
     pub const fn new() -> Self {
         Self {
-            inner: Mutex::new(RefCell::new(DebugOutputCallbacksInner::new())),
+            inner: RefCell::new(DebugOutputCallbacksInner::new()),
         }
     }
 
     fn capture_while<F: FnOnce() -> Result<()>>(&self, f: F) -> Result<String> {
         {
-            let guard = self.inner.lock().unwrap();
-            let mut inner = guard.borrow_mut();
+            let mut inner = self.inner.borrow_mut();
             inner.capturing = true;
             inner.buffer.clear();
         }
@@ -196,8 +195,7 @@ impl DebugOutputCallbacks {
         // ```
         let res = f();
 
-        let guard = self.inner.lock().unwrap();
-        let mut inner = guard.borrow_mut();
+        let mut inner = self.inner.borrow_mut();
         inner.capturing = false;
 
         res?;
@@ -208,8 +206,7 @@ impl DebugOutputCallbacks {
 
 impl IDebugOutputCallbacks_Impl for DebugOutputCallbacks_Impl {
     fn Output(&self, _mask: u32, text: &windows::core::PCSTR) -> windows::core::Result<()> {
-        let guard = self.inner.lock().unwrap();
-        let mut inner = guard.borrow_mut();
+        let mut inner = self.inner.borrow_mut();
         if !inner.capturing {
             return Ok(());
         }
@@ -222,8 +219,8 @@ impl IDebugOutputCallbacks_Impl for DebugOutputCallbacks_Impl {
 }
 
 /// Callbacks used to capture output from the debug engine.
-static DEBUG_OUTPUT_CALLBACKS: StaticComObject<DebugOutputCallbacks> =
-    DebugOutputCallbacks::new().into_static();
+static DEBUG_OUTPUT_CALLBACKS: Mutex<StaticComObject<DebugOutputCallbacks>> =
+    Mutex::new(DebugOutputCallbacks::new().into_static());
 
 /// A debug client wraps a bunch of COM interfaces and provides higher level
 /// features such as dumping registers, reading the GDT, reading virtual memory,
@@ -252,7 +249,10 @@ impl DebugClient {
         // our own `dlogln` statements and then there's no way for us to send it back to
         // wherever it was going before (where the debugger would display it in the
         // debugging window).
-        unsafe { capturing_client.SetOutputCallbacks(DEBUG_OUTPUT_CALLBACKS.as_interface_ref()) }?;
+        unsafe {
+            capturing_client
+                .SetOutputCallbacks(DEBUG_OUTPUT_CALLBACKS.lock().unwrap().as_interface_ref())
+        }?;
 
         Ok(Self {
             control,
@@ -305,6 +305,8 @@ impl DebugClient {
     /// Execute a debugger command and capture the output.
     pub fn exec_with_capture<Str: Into<Vec<u8>>>(&self, cmd: Str) -> Result<String> {
         let output = DEBUG_OUTPUT_CALLBACKS
+            .lock()
+            .unwrap()
             .capture_while(|| Self::exec_on(self.capturing_control.clone(), cmd))?;
 
         Ok(output)
