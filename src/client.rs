@@ -1,27 +1,31 @@
 // Axel '0vercl0k' Souchet - January 21 2024
 //! This contains the main class, [`DebugClient`], which is used to interact
 //! with Microsoft's Debug Engine library via the documented COM objects.
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr};
 use std::mem::MaybeUninit;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use anyhow::{Context, Result, bail};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use windows::Win32::System::Diagnostics::Debug::Extensions::{
-    DEBUG_ADDSYNTHMOD_DEFAULT, DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_ALL_CLIENTS,
+    DEBUG_ADDSYNTHMOD_DEFAULT, DEBUG_EXECUTE_DEFAULT, DEBUG_OUTCTL_THIS_CLIENT,
     DEBUG_OUTPUT_NORMAL, DEBUG_VALUE, DEBUG_VALUE_FLOAT32, DEBUG_VALUE_FLOAT64,
     DEBUG_VALUE_FLOAT80, DEBUG_VALUE_FLOAT128, DEBUG_VALUE_INT8, DEBUG_VALUE_INT16,
     DEBUG_VALUE_INT32, DEBUG_VALUE_INT64, DEBUG_VALUE_VECTOR64, DEBUG_VALUE_VECTOR128,
-    IDebugControl3, IDebugDataSpaces4, IDebugRegisters, IDebugSymbols3,
+    IDebugClient5, IDebugControl3, IDebugDataSpaces4, IDebugOutputCallbacks,
+    IDebugOutputCallbacks_Impl, IDebugRegisters, IDebugSymbols3,
 };
 use windows::Win32::System::Diagnostics::Debug::IMAGE_NT_HEADERS32;
 use windows::Win32::System::SystemInformation::IMAGE_FILE_MACHINE;
 use windows::Win32::System::SystemServices::{
     IMAGE_DOS_HEADER, IMAGE_DOS_SIGNATURE, IMAGE_NT_SIGNATURE,
 };
-use windows::core::{IUnknown, Interface};
+use windows::core::{IUnknown, Interface, implement};
+use windows_core::{ComObjectInterface, StaticComObject};
 
 use crate::as_pcstr::AsPCSTR;
 use crate::bits::Bits;
@@ -135,25 +139,124 @@ macro_rules! dlog {
     }};
 }
 
+/// Store the state of our debug output callbacks. This is used to know when to
+/// capture IO from the `IDebugOutputCallbacks::Output` method.
+#[derive(Default)]
+struct DebugOutputCallbacksInner {
+    capturing: bool,
+    buffer: String,
+}
+
+impl DebugOutputCallbacksInner {
+    const fn new() -> Self {
+        Self {
+            capturing: false,
+            buffer: String::new(),
+        }
+    }
+}
+
+#[implement(IDebugOutputCallbacks)]
+struct DebugOutputCallbacks {
+    inner: Mutex<RefCell<DebugOutputCallbacksInner>>,
+}
+
+impl DebugOutputCallbacks {
+    pub const fn new() -> Self {
+        Self {
+            inner: Mutex::new(RefCell::new(DebugOutputCallbacksInner::new())),
+        }
+    }
+
+    fn capture_while<F: FnOnce() -> Result<()>>(&self, f: F) -> Result<String> {
+        {
+            let guard = self.inner.lock().unwrap();
+            let mut inner = guard.borrow_mut();
+            inner.capturing = true;
+            inner.buffer.clear();
+        }
+
+        // Make sure the hold is not locked at this point because we'll be reentrant and
+        // deadlock otherwise:
+        //
+        // ```text
+        // 06 snapshot!std::sys::sync::mutex::futex::Mutex::lock
+        // 07 snapshot!std::sync::poison::mutex::Mutex<core::cell::RefCell<dbgeng::client::DebugOutputCallbacksInner> >::lock<core::cell::RefCell<dbgeng::client::DebugOutputCallbacksInner> >
+        // 08 snapshot!dbgeng::client::impl$3::Output
+        // 09 snapshot!windows::Win32::System::Diagnostics::Debug::Extensions::impl$267::new::Output<dbgeng::client::DebugOutputCallbacks_Impl,-1>
+        // ...
+        // 0f kdexts!irql
+        // ...
+        // 19 snapshot!windows::Win32::System::Diagnostics::Debug::Extensions::IDebugControl3::Execute<windows_strings::pcstr::PCSTR>
+        // 1a snapshot!dbgeng::client::DebugClient::exec<ref$<str$> >
+        // 1b snapshot!dbgeng::client::impl$4::exec_with_capture::closure$0<ref$<str$> >
+        // 1c snapshot!dbgeng::client::DebugOutputCallbacks::capture_while<dbgeng::client::impl$4::exec_with_capture::closure_env$0<ref$<str$> > >
+        // 1d snapshot!dbgeng::client::DebugClient::exec_with_capture<ref$<str$> >
+        // 1e snapshot!snapshot::state
+        // ```
+        let res = f();
+
+        let guard = self.inner.lock().unwrap();
+        let mut inner = guard.borrow_mut();
+        inner.capturing = false;
+
+        res?;
+
+        Ok(inner.buffer.clone())
+    }
+}
+
+impl IDebugOutputCallbacks_Impl for DebugOutputCallbacks_Impl {
+    fn Output(&self, _mask: u32, text: &windows::core::PCSTR) -> windows::core::Result<()> {
+        let guard = self.inner.lock().unwrap();
+        let mut inner = guard.borrow_mut();
+        if !inner.capturing {
+            return Ok(());
+        }
+
+        let s = str::from_utf8(unsafe { text.as_bytes() }).unwrap_or_default();
+        inner.buffer.push_str(s);
+
+        Ok(())
+    }
+}
+
+/// Callbacks used to capture output from the debug engine.
+static DEBUG_OUTPUT_CALLBACKS: StaticComObject<DebugOutputCallbacks> =
+    DebugOutputCallbacks::new().into_static();
+
 /// A debug client wraps a bunch of COM interfaces and provides higher level
 /// features such as dumping registers, reading the GDT, reading virtual memory,
 /// etc.
 pub struct DebugClient {
     control: IDebugControl3,
+    capturing_control: IDebugControl3,
     registers: IDebugRegisters,
     dataspaces: IDebugDataSpaces4,
     symbols: IDebugSymbols3,
 }
 
 impl DebugClient {
-    pub fn new(client: &IUnknown) -> Result<Self> {
-        let control = client.cast()?;
-        let registers = client.cast()?;
-        let dataspaces = client.cast()?;
-        let symbols = client.cast()?;
+    pub fn new(client_unknown: &IUnknown) -> Result<Self> {
+        let control = client_unknown.cast()?;
+        let client: IDebugClient5 = client_unknown.cast()?;
+        let capturing_client: IDebugClient5 = unsafe { client.CreateClient() }?.cast()?;
+        let capturing_control = capturing_client.cast()?;
+
+        let registers = client_unknown.cast()?;
+        let dataspaces = client_unknown.cast()?;
+        let symbols = client_unknown.cast()?;
+
+        // We create a second client to be able to capture only what we want. If we were
+        // to register those callbacks onto `client_unknown`, we would also intercept
+        // our own `dlogln` statements and then there's no way for us to send it back to
+        // wherever it was going before (where the debugger would display it in the
+        // debugging window).
+        unsafe { capturing_client.SetOutputCallbacks(DEBUG_OUTPUT_CALLBACKS.as_interface_ref()) }?;
 
         Ok(Self {
             control,
+            capturing_control,
             registers,
             dataspaces,
             symbols,
@@ -161,47 +264,50 @@ impl DebugClient {
     }
 
     /// Output a message `s`.
-    fn output<Str>(&self, mask: u32, s: Str) -> Result<()>
-    where
-        Str: Into<Vec<u8>>,
-    {
+    fn output<Str: Into<Vec<u8>>>(&self, mask: u32, s: Str) -> Result<()> {
         let cstr = CString::new(s.into())?;
         unsafe { self.control.Output(mask, cstr.as_pcstr()) }.context("Output failed")
     }
 
     /// Log a message in the debugging window.
     #[allow(dead_code)]
-    pub fn log<Str>(&self, args: Str) -> Result<()>
-    where
-        Str: Into<Vec<u8>>,
-    {
+    pub fn log<Str: Into<Vec<u8>>>(&self, args: Str) -> Result<()> {
         self.output(DEBUG_OUTPUT_NORMAL, args)
     }
 
     /// Log a message followed by a new line in the debugging window.
-    pub fn logln<Str>(&self, args: Str) -> Result<()>
-    where
-        Str: Into<Vec<u8>>,
-    {
+    pub fn logln<Str: Into<Vec<u8>>>(&self, args: Str) -> Result<()> {
         self.output(DEBUG_OUTPUT_NORMAL, "[dbgeng-rs] ")?;
         self.output(DEBUG_OUTPUT_NORMAL, args)?;
         self.output(DEBUG_OUTPUT_NORMAL, "\n")
     }
 
-    /// Execute a debugger command.
-    pub fn exec<Str>(&self, cmd: Str) -> Result<()>
-    where
-        Str: Into<Vec<u8>>,
-    {
+    /// Execute a command on a specific `IDebugControl3`. This is useful to
+    /// capture certain outputs, but at the same time leave some other ones the
+    /// way they are.
+    fn exec_on<Str: Into<Vec<u8>>>(control: IDebugControl3, cmd: Str) -> Result<()> {
         let cstr = CString::new(cmd.into())?;
         unsafe {
-            self.control.Execute(
-                DEBUG_OUTCTL_ALL_CLIENTS,
+            control.Execute(
+                DEBUG_OUTCTL_THIS_CLIENT,
                 cstr.as_pcstr(),
                 DEBUG_EXECUTE_DEFAULT,
             )
         }
         .with_context(|| format!("Execute({cstr:?}) failed"))
+    }
+
+    /// Execute a debugger command.
+    pub fn exec<Str: Into<Vec<u8>>>(&self, cmd: Str) -> Result<()> {
+        Self::exec_on(self.control.clone(), cmd)
+    }
+
+    /// Execute a debugger command and capture the output.
+    pub fn exec_with_capture<Str: Into<Vec<u8>>>(&self, cmd: Str) -> Result<String> {
+        let output = DEBUG_OUTPUT_CALLBACKS
+            .capture_while(|| Self::exec_on(self.capturing_control.clone(), cmd))?;
+
+        Ok(output)
     }
 
     /// Get the register indices from names.
@@ -313,7 +419,7 @@ impl DebugClient {
         // limit should always be one less than an integral multiple of eight (that is,
         // 8N – 1)"
         let gdt_limit = gdt_limit as u64;
-        assert!((gdt_limit + 1) % 8 == 0);
+        assert!((gdt_limit + 1).is_multiple_of(8));
         let max_index = (gdt_limit + 1) / 8;
         if index >= max_index {
             bail!(
@@ -396,10 +502,7 @@ impl DebugClient {
     }
 
     /// Get an address for a named symbol.
-    pub fn get_address_by_name<Str>(&self, symbol: Str) -> Result<u64>
-    where
-        Str: Into<Vec<u8>>,
-    {
+    pub fn get_address_by_name<Str: Into<Vec<u8>>>(&self, symbol: Str) -> Result<u64> {
         let symbol_cstr = CString::new(symbol.into())?;
 
         unsafe { self.symbols.GetOffsetByName(symbol_cstr.as_pcstr()) }
@@ -431,10 +534,7 @@ impl DebugClient {
     }
 
     /// Evaluate an expression as a u64.
-    pub fn eval64<Str>(&self, expr: Str) -> Result<u64>
-    where
-        Str: Into<Vec<u8>>,
-    {
+    pub fn eval64<Str: Into<Vec<u8>>>(&self, expr: Str) -> Result<u64> {
         let expr = CString::new(expr.into())?;
         let mut val = DEBUG_VALUE::default();
         unsafe {
@@ -512,10 +612,7 @@ impl DebugClient {
     }
 
     /// Remove a synthetic module by name.
-    pub fn remove_synthetic_module_by_name<Str>(&self, name: Str) -> Result<()>
-    where
-        Str: Into<Vec<u8>>,
-    {
+    pub fn remove_synthetic_module_by_name<Str: Into<Vec<u8>>>(&self, name: Str) -> Result<()> {
         let mut base = 0u64;
         let name = CString::new(name)?;
         unsafe {
