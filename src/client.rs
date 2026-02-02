@@ -383,8 +383,7 @@ impl DebugClient {
 
     /// Get the value of a specific MSR.
     pub fn msr(&self, msr: u32) -> Result<u64> {
-        unsafe { self.dataspaces.ReadMsr(msr) }
-            .with_context(|| format!("ReadMsr failed for {msr:#x}"))
+        unsafe { self.dataspaces.ReadMsr(msr) }.context("ReadMsr failed")
     }
 
     /// Read a segment descriptor off the GDT.
