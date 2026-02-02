@@ -1,7 +1,6 @@
 // Axel '0vercl0k' Souchet - January 21 2024
 //! This contains the main class, [`DebugClient`], which is used to interact
 //! with Microsoft's Debug Engine library via the documented COM objects.
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{CString, OsStr};
 use std::mem::MaybeUninit;
@@ -158,20 +157,19 @@ impl DebugOutputCallbacksInner {
 
 #[implement(IDebugOutputCallbacks)]
 struct DebugOutputCallbacks {
-    inner: Mutex<RefCell<DebugOutputCallbacksInner>>,
+    inner: Mutex<DebugOutputCallbacksInner>,
 }
 
 impl DebugOutputCallbacks {
     pub const fn new() -> Self {
         Self {
-            inner: Mutex::new(RefCell::new(DebugOutputCallbacksInner::new())),
+            inner: Mutex::new(DebugOutputCallbacksInner::new()),
         }
     }
 
     fn capture_while<F: FnOnce() -> Result<()>>(&self, f: F) -> Result<String> {
         {
-            let guard = self.inner.lock().unwrap();
-            let mut inner = guard.borrow_mut();
+            let mut inner = self.inner.lock().unwrap();
             inner.capturing = true;
             inner.buffer.clear();
         }
@@ -196,8 +194,7 @@ impl DebugOutputCallbacks {
         // ```
         let res = f();
 
-        let guard = self.inner.lock().unwrap();
-        let mut inner = guard.borrow_mut();
+        let mut inner = self.inner.lock().unwrap();
         inner.capturing = false;
 
         res?;
@@ -208,8 +205,7 @@ impl DebugOutputCallbacks {
 
 impl IDebugOutputCallbacks_Impl for DebugOutputCallbacks_Impl {
     fn Output(&self, _mask: u32, text: &windows::core::PCSTR) -> windows::core::Result<()> {
-        let guard = self.inner.lock().unwrap();
-        let mut inner = guard.borrow_mut();
+        let mut inner = self.inner.lock().unwrap();
         if !inner.capturing {
             return Ok(());
         }
